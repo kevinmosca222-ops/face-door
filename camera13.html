@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera13 Face Gate</title>
+<style>body{font-family:sans-serif;text-align:center;background:#111;color:white}video{width:95%;max-width:400px}canvas{border:3px solid yellow;width:96px;height:96px}button{font-size:20px;padding:12px;margin:6px}#log{color:yellow;text-align:left;padding:10px;font-size:16px}#faceStatus{font-size:24px;padding:10px}</style></head>
+<body>
+<h2>Camera13 - Face Gate</h2>
+<div id="faceStatus">⏳ Waiting for Face...</div>
+<video id="video" autoplay playsinline muted></video><br>
+<button onclick="start()">▶ Start</button>
+<div id="result">Waiting...</div>
+<div>👇 YELLOW BOX = What AI sees:</div>
+<canvas id="canvas" width="96" height="96"></canvas>
+<div id="log">Log...</div>
+<br>
+<button onclick="sendManually('/alfon')">ALFON</button>
+<button onclick="sendManually('/hans')">HANS</button>
+<button onclick="sendManually('/unknown')">UNKNOWN PERSON</button>
+<script src="edge-impulse-standalone.js"></script>
+<script src="run-impulse.js"></script>
+<script>
+const ESP32="http://192.168.18.225";
+let lastSent="", confirmCount=0, lastTop="", video, faceDetector=null, noFaceCount=0;
+function log(m){document.getElementById('log').innerHTML+="<br>"+m;}
+function sendToESP32(path){
+  log("SENDING: "+path);
+  fetch(ESP32+path+"?t="+Date.now(), {mode:'no-cors'}).catch(e=>{});
+  let img=new Image(); img.src=ESP32+path+"?t="+Date.now();
+  lastSent=path;
+}
+function sendManually(p){ log("Manual: "+p); sendToESP32(p); }
+async function start(){
+  video=document.getElementById('video');
+  let stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
+  video.srcObject=stream; video.muted=true; await video.play();
+  log("Camera OK!");
+  // Try to use phone's built-in Face Detector
+  try{
+    if('FaceDetector' in window){ faceDetector=new FaceDetector({fastMode:true, maxDetectedFaces:1}); log("FaceDetector ON - Gate Active"); }
+    else { log("FaceDetector NOT supported - Using Always Scan mode"); }
+  }catch(e){ log("FaceDetector error - Using Always Scan mode"); }
+  let classifier=new EdgeImpulseClassifier(); await classifier.init();
+  log("Model LOADED! Show a FACE to start scanning");
+  setInterval(async()=>{
+    let c=document.getElementById('canvas');let ctx=c.getContext('2d');
+    ctx.drawImage(video,0,0,96,96);
+
+    // STEP 1: FACE GATE - Is there a face?
+    let hasFace=true;
+    if(faceDetector){
+      try{
+        let faces=await faceDetector.detect(video);
+        hasFace = faces.length>0;
+      }catch(e){ hasFace=true; }
+    }
+    if(!hasFace){
+      document.getElementById('faceStatus').textContent="⏳ No Face - Waiting...";
+      document.getElementById('faceStatus').style.color="white";
+      document.getElementById('result').textContent="No face - not scanning";
+      noFaceCount++;
+      // If no face for 3 seconds, turn off LEDs
+      if(noFaceCount==3 && lastSent!="/noface"){ sendToESP32("/noface"); }
+      confirmCount=0; lastTop="";
+      return; // STOP HERE - Don't run Edge Impulse on wall!
+    }
+    // Face found!
+    noFaceCount=0;
+    document.getElementById('faceStatus').textContent="✅ Face Found! Scanning...";
+    document.getElementById('faceStatus').style.color="#0f0";
+
+    // STEP 2: EDGE IMPULSE - Who is this face?
+    let d=ctx.getImageData(0,0,96,96).data;
+    let f=[];for(let i=0;i<d.length;i+=4){f.push((d[i]+d[i+1]+d[i+2])/3);}
+    let res=classifier.classify(f);
+    let alfon=0,hans=0,unknown=0,txt="";
+    for(let r of res.results){
+      txt+=r.label+":"+r.value.toFixed(2)+" ";
+      if(r.label.toLowerCase()=="alfon") alfon=r.value;
+      if(r.label.toLowerCase()=="hans") hans=r.value;
+      if(r.label.toLowerCase()=="unknown") unknown=r.value;
+    }
+    // SMART: Face is present, so Unknown = Unknown PERSON, not wall
+    let top="",score=0;
+    if(alfon>0.50 && alfon>=hans){ top="Alfon"; score=alfon; }
+    else if(hans>0.50 && hans>=alfon){ top="Hans"; score=hans; }
+    else if(unknown>0.40){ top="unknown"; score=unknown; } // Face + not Alfon/Hans = Unknown Person
+    else { top="waiting"; score=0; }
+    document.getElementById('result').textContent=txt+" => "+top;
+    if(top=="waiting"){ confirmCount=0; return; }
+    // STABLE: Need 2x same face
+    if(top==lastTop){ confirmCount++; } else { lastTop=top; confirmCount=1; }
+    if(confirmCount>=2 && "/"+top.toLowerCase()!=lastSent){
+      sendToESP32("/"+top.toLowerCase());
+    }
+  },1000);
+}
+</script></body></html>
