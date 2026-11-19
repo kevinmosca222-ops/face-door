@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera17 Unknown Person</title>
+<style>body{font-family:sans-serif;text-align:center;background:#111;color:white}video{width:95%;max-width:400px}canvas{border:3px solid yellow;width:96px;height:96px}button{font-size:20px;padding:12px;margin:6px}#log{color:yellow;text-align:left;padding:10px;font-size:16px}#person{font-size:24px;padding:8px}</style></head>
+<body>
+<h2>Camera17 - Red = Unknown PERSON</h2>
+<div id="person">⏳ Waiting for Person...</div>
+<video id="video" autoplay playsinline muted></video><br>
+<button onclick="start()">▶ Start</button>
+<div id="result">Waiting...</div>
+<div>👇 YELLOW BOX:</div>
+<canvas id="canvas" width="96" height="96"></canvas>
+<div id="log">Log...</div>
+<br>
+<button onclick="sendManually('/alfon')">ALFON</button>
+<button onclick="sendManually('/hans')">HANS</button>
+<button onclick="sendManually('/unknown')">UNKNOWN PERSON</button>
+<script src="edge-impulse-standalone.js"></script>
+<script src="run-impulse.js"></script>
+<script>
+const ESP32="http://192.168.18.225";
+let lastSent="", confirmCount=0, lastTop="", video, faceDetector=null, noFaceCount=0;
+function log(m){document.getElementById('log').innerHTML+="<br>"+m;}
+function sendManually(p){ log("Manual: "+p); fetch(ESP32+p+"?t="+Date.now(),{mode:'no-cors'}).catch(e=>{}); let i=new Image(); i.src=ESP32+p+"?t="+Date.now(); lastSent=p; }
+async function start(){
+  video=document.getElementById('video');
+  let stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
+  video.srcObject=stream; video.muted=true; await video.play();
+  log("Camera OK!");
+  try{ if('FaceDetector' in window){ faceDetector=new FaceDetector({fastMode:true,maxDetectedFaces:1}); log("FaceDetector ON - Red only for PERSON"); } else { log("FaceDetector NOT supported - Using fallback: Need face-like image"); } }catch(e){ log("FaceDetector error - fallback"); }
+  let classifier=new EdgeImpulseClassifier(); await classifier.init();
+  log("Model LOADED! Show a PERSON face");
+  setInterval(async()=>{
+    let c=document.getElementById('canvas');let ctx=c.getContext('2d');
+    ctx.drawImage(video,0,0,96,96);
+
+    // STEP 1: IS THERE A PERSON?
+    let hasPerson=true;
+    if(faceDetector){
+      try{ let faces=await faceDetector.detect(video); hasPerson=faces.length>0; }catch(e){ hasPerson=true; }
+    }
+    if(!hasPerson){
+      document.getElementById('person').textContent="⏳ No Person (Wall) - Red OFF";
+      document.getElementById('person').style.color="white";
+      document.getElementById('result').textContent="Wall - not a person, not scanning";
+      noFaceCount++;
+      if(noFaceCount==3 && lastSent!="/noface"){ fetch(ESP32+"/noface?t="+Date.now(),{mode:'no-cors'}).catch(e=>{}); let i=new Image(); i.src=ESP32+"/noface?t="+Date.now(); lastSent="/noface"; }
+      confirmCount=0; lastTop="";
+      return;
+    }
+    noFaceCount=0;
+    document.getElementById('person').textContent="✅ PERSON Found! Who is it?";
+    document.getElementById('person').style.color="#0f0";
+
+    // STEP 2: WHO IS THIS PERSON?
+    let d=ctx.getImageData(0,0,96,96).data;
+    let f=[];for(let i=0;i<d.length;i+=4){f.push((d[i]+d[i+1]+d[i+2])/3);}
+    let res=classifier.classify(f);
+    let alfon=0,hans=0,unknown=0,txt="";
+    for(let r of res.results){ txt+=r.label+":"+r.value.toFixed(2)+" "; if(r.label.toLowerCase()=="alfon") alfon=r.value; if(r.label.toLowerCase()=="hans") hans=r.value; if(r.label.toLowerCase()=="unknown") unknown=r.value; }
+
+    // PERSON UNKNOWN: If it's a PERSON and not Alfon/Hans, it's Unknown PERSON
+    // No need for 1.00! 0.50 is enough because we KNOW it's a person!
+    let top="",score=0;
+    if(alfon>0.50 && alfon>=hans){ top="Alfon"; score=alfon; }
+    else if(hans>0.50 && hans>=alfon){ top="Hans"; score=hans; }
+    else if(unknown>0.50){ top="unknown"; score=unknown; }
+    else if(unknown>0.30 && alfon<0.30 && hans<0.30){ top="unknown"; score=unknown; } // Person but unsure = still Unknown Person
+    else { top="waiting"; score=0; }
+    document.getElementById('result').textContent=txt+" => "+top;
+    if(top=="waiting"){ confirmCount=0; return; }
+    if(top==lastTop){ confirmCount++; } else { lastTop=top; confirmCount=1; }
+    if(confirmCount>=2 && "/"+top.toLowerCase()!=lastSent){
+      lastSent="/"+top.toLowerCase();
+      log("PERSON CONFIRMED: "+top+" "+score.toFixed(2)+" -> SENDING: "+lastSent+" -> LED ON 3 SEC");
+      fetch(ESP32+lastSent+"?t="+Date.now(),{mode:'no-cors'}).catch(e=>{});
+      let img=new Image(); img.src=ESP32+lastSent+"?t="+Date.now();
+      setTimeout(()=>{ lastSent=""; confirmCount=0; lastTop=""; log("Ready for next person..."); }, 3000);
+    }
+  },1000);
+}
+</script></body></html>
