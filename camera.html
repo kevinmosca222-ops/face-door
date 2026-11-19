@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Single Phone AI Door</title>
+<style>body{font-family:sans-serif;text-align:center;background:#111;color:white}video{width:95%;max-width:400px;border-radius:12px}button{font-size:20px;padding:12px;margin:6px}</style></head>
+<body>
+<h2>Single Phone AI Door</h2>
+<video id="video" autoplay playsinline muted></video><br>
+<button onclick="start()">▶ Start Camera + AI</button>
+<div id="result" style="font-size:24px;font-weight:bold">Waiting...</div>
+<canvas id="canvas" width="96" height="96" style="display:none"></canvas><br>
+<button onclick="sendToESP('/alfon')">ALFON - Green</button>
+<button onclick="sendToESP('/hans')">HANS - Blue</button>
+<button onclick="sendToESP('/unknown')">UNKNOWN - Red</button>
+<script src="run-impulse.js"></script>
+<script>
+const ESP32="http://192.168.18.225";
+let classifier,lastSend=0;
+function sendToESP(p){fetch(ESP32+p,{mode:"no-cors"});document.getElementById('result').textContent="Sent "+p;}
+async function start(){
+  classifier=new EdgeImpulseClassifier();await classifier.init();
+  let video=document.getElementById('video');
+  let stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
+  video.srcObject=stream;
+  setInterval(async()=>{
+    try{
+      let c=document.getElementById('canvas');let ctx=c.getContext('2d');
+      ctx.drawImage(video,0,0,96,96);
+      let d=ctx.getImageData(0,0,96,96).data;
+      let features=[];for(let i=0;i<d.length;i+=4){features.push((d[i]+d[i+1]+d[i+2])/3/255);}
+      let res=classifier.classify(features);
+      let top="",score=0,txt="";
+      for(let r of res.results){txt+=r.label+":"+r.value.toFixed(2)+" ";if(r.value>score){score=r.value;top=r.label;}}
+      document.getElementById('result').textContent=txt+" => "+top;
+      if(score>0.85&&Date.now()-lastSend>3000){lastSend=Date.now();if(top==="Alfon")sendToESP('/alfon');else if(top==="Hans")sendToESP('/hans');else if(top==="unknown")sendToESP('/unknown');}
+    }catch(e){console.log(e);}
+  },2000);
+}
+</script></body></html>
