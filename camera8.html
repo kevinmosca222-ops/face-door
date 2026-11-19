@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera8 Final</title>
+<style>body{font-family:sans-serif;text-align:center;background:#111;color:white}video{width:95%;max-width:400px}canvas{border:3px solid yellow;width:96px;height:96px}button{font-size:20px;padding:12px;margin:6px}#log{color:yellow;text-align:left;padding:10px;font-size:16px}</style></head>
+<body>
+<h2>Camera8 - Final</h2>
+<video id="video" autoplay playsinline muted></video><br>
+<button onclick="start()">▶ Start</button>
+<div id="result">Waiting...</div>
+<div>👇 YELLOW BOX = What AI sees:</div>
+<canvas id="canvas" width="96" height="96"></canvas>
+<div id="log">Log...</div>
+<br>
+<button onclick="sendManually('/alfon')">ALFON</button>
+<button onclick="sendManually('/hans')">HANS</button>
+<button onclick="sendManually('/unknown')">UNKNOWN</button>
+<script src="edge-impulse-standalone.js"></script>
+<script src="run-impulse.js"></script>
+<script>
+const ESP32="http://192.168.18.225";
+let lastSend=0, video;
+function log(m){document.getElementById('log').innerHTML+="<br>"+m;}
+function sendManually(p){
+  log("Manual SENDING: "+p);
+  fetch(ESP32+p+"?t="+Date.now(), {mode:'no-cors'}).catch(e=>{});
+  let img=new Image(); img.src=ESP32+p+"?t="+Date.now();
+}
+async function start(){
+  video=document.getElementById('video');
+  let stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
+  video.srcObject=stream; video.muted=true; await video.play();
+  log("Camera OK!");
+  let classifier=new EdgeImpulseClassifier(); await classifier.init();
+  log("Model LOADED! Point at face / wall");
+  setInterval(async()=>{
+    let c=document.getElementById('canvas');let ctx=c.getContext('2d');
+    ctx.drawImage(video,0,0,96,96);
+    let d=ctx.getImageData(0,0,96,96).data;
+    let f=[];for(let i=0;i<d.length;i+=4){f.push((d[i]+d[i+1]+d[i+2])/3);}
+    let res=classifier.classify(f);
+    let top="",score=0,txt="";
+    for(let r of res.results){txt+=r.label+":"+r.value.toFixed(2)+" ";if(r.value>score){score=r.value;top=r.label;}}
+    document.getElementById('result').textContent=txt+" => "+top+" | "+new Date().toLocaleTimeString();
+    if(score>0.40 && Date.now()-lastSend>2000){
+      lastSend=Date.now();
+      let path="/"+top.toLowerCase();
+      log("Auto: "+top+" "+score.toFixed(2)+" -> SENDING: "+path);
+      fetch(ESP32+path+"?t="+Date.now(), {mode:'no-cors'}).catch(e=>{});
+      let img=new Image(); img.src=ESP32+path+"?t="+Date.now();
+    }
+  },1000);
+}
+</script></body></html>
