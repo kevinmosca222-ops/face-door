@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera22 Background Person Detection</title>
+<style>body{font-family:sans-serif;text-align:center;background:#111;color:white}video{width:95%;max-width:400px}canvas{border:3px solid yellow;width:96px;height:96px}button{font-size:20px;padding:12px;margin:6px}#log{color:yellow;text-align:left;padding:10px;font-size:16px}#person{font-size:24px;padding:8px}#timer{font-size:22px;color:#ff0}#diff{font-size:18px;color:#0ff}</style></head>
+<body>
+<h2>Camera22 - Real Person Detection</h2>
+<div id="person">⏳ Point at EMPTY background, tap Start...</div>
+<div id="timer">Timer: --</div>
+<div id="diff">Difference: --</div>
+<video id="video" autoplay playsinline muted></video><br>
+<button onclick="start()">▶ Start</button>
+<button onclick="setBackground()">📸 Set Background (No Person)</button>
+<button onclick="resetNow()">🔄 Reset</button>
+<div id="result">Waiting...</div>
+<div>👇 YELLOW BOX:</div>
+<canvas id="canvas" width="96" height="96"></canvas>
+<div id="log">Log...</div>
+<br>
+<button onclick="sendManually('/alfon')">ALFON</button>
+<button onclick="sendManually('/hans')">HANS</button>
+<button onclick="sendManually('/unknown')">UNKNOWN</button>
+<script src="edge-impulse-standalone.js"></script>
+<script src="run-impulse.js"></script>
+<script>
+const ESP32="http://192.168.18.225";
+let lastSent="", confirmCount=0, lastTop="", video;
+let background=null, personConfirmed=false, personStartTime=0, alreadySent=false, isCoolingDown=false;
+function log(m){document.getElementById('log').innerHTML+="<br>"+m;}
+function resetNow(){ log("🔄 RESET"); personConfirmed=false; personStartTime=0; alreadySent=false; confirmCount=0; lastTop=""; lastSent=""; isCoolingDown=false; document.getElementById('person').textContent="⏳ Waiting for Person..."; document.getElementById('timer').textContent="Timer: --"; }
+function setBackground(){
+  let c=document.getElementById('canvas');let ctx=c.getContext('2d');
+  ctx.drawImage(video,0,0,96,96);
+  background=ctx.getImageData(0,0,96,96).data.slice(); // Save background
+  log("📸 Background saved! Now show a person - difference must go > 30");
+  personConfirmed=false; personStartTime=0; alreadySent=false;
+}
+function sendToESP32(path, reason){ log(reason+" -> SENDING: "+path+" -> LED ON 3 SEC"); fetch(ESP32+path+"?t="+Date.now(),{mode:'no-cors'}).catch(e=>{}); let i=new Image(); i.src=ESP32+path+"?t="+Date.now(); lastSent=path; }
+function sendManually(p){ log("Manual: "+p); sendToESP32(p,"Manual"); }
+async function start(){
+  video=document.getElementById('video');
+  let stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
+  video.srcObject=stream; video.muted=true; await video.play();
+  log("Camera OK!");
+  let classifier=new EdgeImpulseClassifier(); await classifier.init();
+  log("Model LOADED!");
+  // AUTO: Save background after 2 sec - point at EMPTY wall for first 2 sec!
+  log("⏳ Point at EMPTY background for 2 sec...");
+  setTimeout(()=>{
+    let c=document.getElementById('canvas');let ctx=c.getContext('2d');
+    ctx.drawImage(video,0,0,96,96);
+    background=ctx.getImageData(0,0,96,96).data.slice();
+    log("📸 Background AUTO-saved! Now show a person!");
+    document.getElementById('person').textContent="✅ Background saved! Show a person...";
+  },2000);
+  setInterval(async()=>{
+    let c=document.getElementById('canvas');let ctx=c.getContext('2d');
+    ctx.drawImage(video,0,0,96,96);
+    let d=ctx.getImageData(0,0,96,96).data;
+    let f=[];for(let i=0;i<d.length;i+=4){f.push((d[i]+d[i+1]+d[i+2])/3);}
+    let res=classifier.classify(f);
+    let alfon=0,hans=0,unknown=0,txt="";
+    for(let r of res.results){ txt+=r.label+":"+r.value.toFixed(2)+" "; if(r.label.toLowerCase()=="alfon") alfon=r.value; if(r.label.toLowerCase()=="hans") hans=r.value; if(r.label.toLowerCase()=="unknown") unknown=r.value; }
+    document.getElementById('result').textContent=txt+" (live)";
+
+    if(isCoolingDown){ document.getElementById('person').textContent="✅ Sent! Cooling down 4 sec..."; document.getElementById('timer').textContent="Next person soon..."; return; }
+    if(!background){
+      document.getElementById('person').textContent="⏳ Saving background... Point at EMPTY wall";
+      return;
+    }
+
+    // ===== REAL PERSON DETECTION: Compare to background =====
+    let diffSum=0, count=0;
+    for(let i=0;i<d.length;i+=16){ // Check every 4th pixel for speed
+      let bg=background[i];
+      let cur=d[i];
+      diffSum+=Math.abs(cur-bg);
+      count++;
+    }
+    let diffAvg=diffSum/count; // 0 = same as background, 50+ = person!
+    document.getElementById('diff').textContent="Difference: "+diffAvg.toFixed(1)+" (Need >30 = Person, <15 = No Person)";
+
+    // Person = Difference > 30
+    let hasPerson = diffAvg > 30;
+
+    if(!hasPerson){
+      document.getElementById('person').textContent="⏳ No Person - Same as background (Diff "+diffAvg.toFixed(1)+")";
+      document.getElementById('person').style.color="white";
+      document.getElementById('timer').textContent="Timer: NOT started - No person";
+      // Person left -> Reset
+      personConfirmed=false; personStartTime=0; alreadySent=false; confirmCount=0; lastTop="";
+      return;
+    }
+
+    // PERSON IS THERE! Start 3-sec scan (only once per person)
+    if(!personConfirmed){
+      personConfirmed=true; personStartTime=Date.now(); alreadySent=false; confirmCount=0; lastTop="";
+      log("✅ PERSON DETECTED! Diff "+diffAvg.toFixed(1)+" > 30! Starting 3-sec scan...");
+    }
+    if(alreadySent) return;
+    let elapsed=Date.now()-personStartTime;
+    let remaining=Math.max(0,3000-elapsed);
+    document.getElementById('person').textContent="✅ PERSON in front! Scanning... Diff "+diffAvg.toFixed(1);
+    document.getElementById('person').style.color="#0f0";
+    document.getElementById('timer').textContent="Scanning: "+(remaining/1000).toFixed(1)+"s left - Alfon/Hans?";
+
+    let top="",score=0;
+    if(alfon>0.50 && alfon>=hans){ top="Alfon"; score=alfon; }
+    else if(hans>0.50 && hans>=alfon){ top="Hans"; score=hans; }
+
+    if(top!=""){
+      if(top==lastTop){ confirmCount++; } else { lastTop=top; confirmCount=1; }
+      if(confirmCount>=2){
+        alreadySent=true; isCoolingDown=true;
+        sendToESP32("/"+top.toLowerCase(), "IDENTIFIED in "+(elapsed/1000).toFixed(1)+"s: "+top+" "+score.toFixed(2));
+        setTimeout(()=>{ log("🔄 Auto-reset - Ready for NEXT person!"); personConfirmed=false; personStartTime=0; alreadySent=false; confirmCount=0; lastTop=""; lastSent=""; isCoolingDown=false; }, 4000);
+        return;
+      }
+    } else { confirmCount=0; }
+
+    if(elapsed>=3000){
+      alreadySent=true; isCoolingDown=true;
+      document.getElementById('timer').textContent="⏰ Timeout 3 sec! -> UNKNOWN PERSON";
+      sendToESP32("/unknown", "TIMEOUT 3 sec - Person but not Alfon/Hans (Alfon "+alfon.toFixed(2)+" Hans "+hans.toFixed(2)+" Unknown "+unknown.toFixed(2)+")");
+      setTimeout(()=>{ log("🔄 Auto-reset - Ready for NEXT person!"); personConfirmed=false; personStartTime=0; alreadySent=false; confirmCount=0; lastTop=""; lastSent=""; isCoolingDown=false; }, 4000);
+    }
+  },1000);
+}
+</script></body></html>
