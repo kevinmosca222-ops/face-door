@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera6 - See What AI Sees</title>
+<style>body{font-family:sans-serif;text-align:center;background:#111;color:white}video{width:95%;max-width:400px}canvas{border:3px solid yellow;width:96px;height:96px;image-rendering:pixelated}button{font-size:20px;padding:12px;margin:6px}#log{color:yellow;text-align:left;padding:10px}</style></head>
+<body>
+<h2>Camera6 - See What AI Sees</h2>
+<video id="video" autoplay playsinline muted></video><br>
+<button onclick="start()">▶ Start Camera + AI</button>
+<div id="result">Waiting...</div>
+<div>👇 THIS is what AI sees (yellow box):</div>
+<canvas id="canvas" width="96" height="96"></canvas>
+<div id="log">Log...</div>
+<br>
+<button onclick="sendManually('/alfon')">ALFON</button>
+<button onclick="sendManually('/hans')">HANS</button>
+<button onclick="sendManually('/unknown')">UNKNOWN</button>
+<script src="edge-impulse-standalone.js"></script>
+<script src="run-impulse.js"></script>
+<script>
+const ESP32="http://192.168.18.225";
+let lastSend=0, video;
+function log(m){document.getElementById('log').innerHTML+="<br>"+m;}
+function sendManually(p){let img=new Image();img.src=ESP32+p+"?t="+Date.now();log("Manual: "+p);}
+function sendAuto(p){let img=new Image();img.src=ESP32+p+"?t="+Date.now();}
+async function start(){
+  log("1. Button tapped");
+  video=document.getElementById('video');
+  try{
+    let stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user", width:640, height:480}});
+    video.srcObject=stream; video.muted=true; await video.play();
+    // Wait for video size
+    await new Promise(r=>{ video.onloadedmetadata=()=>r(); setTimeout(r,1000); });
+    log("2. ✅ Camera PLAYING! video size: "+video.videoWidth+"x"+video.videoHeight);
+  }catch(e){log("❌ Camera ERROR: "+e.message);return;}
+  try{
+    let classifier=new EdgeImpulseClassifier(); await classifier.init();
+    log("3. ✅ Model LOADED! Watch yellow box - it should show your hand/face");
+    setInterval(async()=>{
+      let c=document.getElementById('canvas');let ctx=c.getContext('2d');
+      // FIX: draw with correct size, cover the square
+      ctx.drawImage(video, 0, 0, 96, 96);
+      let d=ctx.getImageData(0,0,96,96).data;
+      let f=[];for(let i=0;i<d.length;i+=4){f.push((d[i]+d[i+1]+d[i+2])/3/255);}
+      let res=classifier.classify(f);
+      let top="",score=0,txt="";
+      for(let r of res.results){txt+=r.label+":"+r.value.toFixed(2)+" ";if(r.value>score){score=r.value;top=r.label;}}
+      document.getElementById('result').textContent=txt+" => "+top+" | "+new Date().toLocaleTimeString();
+      if(score>0.40 && Date.now()-lastSend>5000){
+        lastSend=Date.now(); log("Auto: "+top+" "+score.toFixed(2)); sendAuto('/'+top.toLowerCase());
+      }
+    },1000);
+  }catch(e){log("❌ Model ERROR: "+e.message);}
+}
+</script></body></html>
