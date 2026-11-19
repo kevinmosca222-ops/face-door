@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera15 Final Actual Test</title>
+<style>body{font-family:sans-serif;text-align:center;background:#111;color:white}video{width:95%;max-width:400px}canvas{border:3px solid yellow;width:96px;height:96px}button{font-size:20px;padding:12px;margin:6px}#log{color:yellow;text-align:left;padding:10px;font-size:16px}</style></head>
+<body>
+<h2>Camera15 - Actual Test Fix</h2>
+<video id="video" autoplay playsinline muted></video><br>
+<button onclick="start()">▶ Start</button>
+<div id="result">Waiting...</div>
+<div>👇 YELLOW BOX:</div>
+<canvas id="canvas" width="96" height="96"></canvas>
+<div id="log">Log...</div>
+<br>
+<button onclick="sendManually('/alfon')">ALFON</button>
+<button onclick="sendManually('/hans')">HANS</button>
+<button onclick="sendManually('/unknown')">UNKNOWN</button>
+<script src="edge-impulse-standalone.js"></script>
+<script src="run-impulse.js"></script>
+<script>
+const ESP32="http://192.168.18.225";
+let lastSent="", confirmCount=0, lastTop="", video;
+function log(m){document.getElementById('log').innerHTML+="<br>"+m;}
+function sendManually(p){ log("Manual: "+p); fetch(ESP32+p+"?t="+Date.now(),{mode:'no-cors'}).catch(e=>{}); let i=new Image(); i.src=ESP32+p+"?t="+Date.now(); lastSent=p; }
+async function start(){
+  video=document.getElementById('video');
+  let stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
+  video.srcObject=stream; video.muted=true; await video.play();
+  log("Camera OK!");
+  let classifier=new EdgeImpulseClassifier(); await classifier.init();
+  log("Model LOADED! Actual test - Unknown needs only 0.50");
+  setInterval(async()=>{
+    let c=document.getElementById('canvas');let ctx=c.getContext('2d');
+    ctx.drawImage(video,0,0,96,96);
+    let d=ctx.getImageData(0,0,96,96).data;
+    let f=[];for(let i=0;i<d.length;i+=4){f.push((d[i]+d[i+1]+d[i+2])/3);}
+    let res=classifier.classify(f);
+    let alfon=0,hans=0,unknown=0,txt="";
+    for(let r of res.results){ txt+=r.label+":"+r.value.toFixed(2)+" "; if(r.label.toLowerCase()=="alfon") alfon=r.value; if(r.label.toLowerCase()=="hans") hans=r.value; if(r.label.toLowerCase()=="unknown") unknown=r.value; }
+    // FIXED: Unknown only needs 0.50 for real face
+    let top="",score=0;
+    if(alfon>0.40 && alfon>=hans && alfon>=unknown){ top="Alfon"; score=alfon; }
+    else if(hans>0.40 && hans>=alfon && hans>=unknown){ top="Hans"; score=hans; }
+    else if(unknown>0.50){ top="unknown"; score=unknown; }
+    else { top="waiting"; score=0; }
+    document.getElementById('result').textContent=txt+" => "+top;
+    if(top=="waiting"){ confirmCount=0; return; }
+    if(top==lastTop){ confirmCount++; } else { lastTop=top; confirmCount=1; }
+    if(confirmCount>=1 && "/"+top.toLowerCase()!=lastSent){
+      lastSent="/"+top.toLowerCase();
+      log("SENDING: "+lastSent+" ("+top+" "+score.toFixed(2)+")");
+      fetch(ESP32+lastSent+"?t="+Date.now(),{mode:'no-cors'}).catch(e=>{});
+      let img=new Image(); img.src=ESP32+lastSent+"?t="+Date.now();
+    }
+  },1000);
+}
+</script></body></html>
