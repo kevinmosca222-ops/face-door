@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera19 Person First</title>
+<style>body{font-family:sans-serif;text-align:center;background:#111;color:white}video{width:95%;max-width:400px}canvas{border:3px solid yellow;width:96px;height:96px}button{font-size:20px;padding:12px;margin:6px}#log{color:yellow;text-align:left;padding:10px;font-size:16px}#person{font-size:24px;padding:8px}#timer{font-size:22px;color:#ff0}</style></head>
+<body>
+<h2>Camera19 - Person First, Then 3 Sec Scan</h2>
+<div id="person">⏳ Waiting for Person...</div>
+<div id="timer">Timer: --</div>
+<video id="video" autoplay playsinline muted></video><br>
+<button onclick="start()">▶ Start</button>
+<div id="result">Waiting...</div>
+<div>👇 YELLOW BOX:</div>
+<canvas id="canvas" width="96" height="96"></canvas>
+<div id="log">Log...</div>
+<br>
+<button onclick="sendManually('/alfon')">ALFON</button>
+<button onclick="sendManually('/hans')">HANS</button>
+<button onclick="sendManually('/unknown')">UNKNOWN</button>
+<script src="edge-impulse-standalone.js"></script>
+<script src="run-impulse.js"></script>
+<script>
+const ESP32="http://192.168.18.225";
+let lastSent="", confirmCount=0, lastTop="", video, faceDetector=null;
+let personConfirm=0, personConfirmed=false, personStartTime=0, alreadySent=false, noFaceCount=0;
+function log(m){document.getElementById('log').innerHTML+="<br>"+m;}
+function sendToESP32(path, reason){
+  log(reason+" -> SENDING: "+path+" -> LED ON 3 SEC");
+  fetch(ESP32+path+"?t="+Date.now(),{mode:'no-cors'}).catch(e=>{});
+  let img=new Image(); img.src=ESP32+path+"?t="+Date.now();
+  lastSent=path;
+}
+function sendManually(p){ log("Manual: "+p); sendToESP32(p,"Manual"); }
+async function start(){
+  video=document.getElementById('video');
+  let stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
+  video.srcObject=stream; video.muted=true; await video.play();
+  log("Camera OK!");
+  try{ if('FaceDetector' in window){ faceDetector=new FaceDetector({fastMode:true,maxDetectedFaces:1}); log("FaceDetector ON - Must see face first"); } else { log("FaceDetector NOT supported - Using fallback: Person = face-like"); } }catch(e){ log("FaceDetector error - fallback"); }
+  let classifier=new EdgeImpulseClassifier(); await classifier.init();
+  log("Model LOADED! Step 1: Show face, Step 2: 3 sec scan");
+  setInterval(async()=>{
+    let c=document.getElementById('canvas');let ctx=c.getContext('2d');
+    ctx.drawImage(video,0,0,96,96);
+
+    // ===== STEP 0: MUST DETECT A PERSON FIRST =====
+    let hasPerson=true;
+    if(faceDetector){
+      try{ let faces=await faceDetector.detect(video); hasPerson=faces.length>0; }catch(e){ hasPerson=true; }
+    }
+    if(!hasPerson){
+      document.getElementById('person').textContent="⏳ No Person - Waiting for face...";
+      document.getElementById('person').style.color="white";
+      document.getElementById('timer').textContent="Timer: --";
+      document.getElementById('result').textContent="No person - not scanning";
+      // Person left -> RESET EVERYTHING
+      personConfirm=0; personConfirmed=false; personStartTime=0; alreadySent=false; confirmCount=0; lastTop="";
+      noFaceCount++;
+      if(noFaceCount==3 && lastSent!="/noface"){ fetch(ESP32+"/noface?t="+Date.now(),{mode:'no-cors'}).catch(e=>{}); let i=new Image(); i.src=ESP32+"/noface?t="+Date.now(); lastSent="/noface"; }
+      return; // STOP - Don't scan wall!
+    }
+    noFaceCount=0;
+
+    // Person seen, but need 2x in a row to CONFIRM it's really a person (not flicker)
+    if(!personConfirmed){
+      personConfirm++;
+      document.getElementById('person').textContent="👀 Person maybe? Confirming... "+personConfirm+"/2";
+      document.getElementById('person').style.color="#ff0";
+      document.getElementById('timer').textContent="Timer: Not started yet - confirming person...";
+      document.getElementById('result').textContent="Confirming person...";
+      if(personConfirm>=2){
+        personConfirmed=true; personStartTime=Date.now(); alreadySent=false; confirmCount=0; lastTop="";
+        log("✅ PERSON CONFIRMED! Starting 3-sec scan timer...");
+      }
+      return; // Don't scan yet, just confirming person
+    }
+
+    // ===== STEP 1: PERSON CONFIRMED -> START 3-SEC SCAN =====
+    if(alreadySent){
+      document.getElementById('person').textContent="✅ Done for this person - Ask person to step back...";
+      document.getElementById('timer').textContent="Done - Waiting for person to leave";
+      return;
+    }
+    let elapsed=Date.now()-personStartTime;
+    let remaining=Math.max(0,3000-elapsed);
+    document.getElementById('person').textContent="✅ PERSON Confirmed! Scanning...";
+    document.getElementById('person').style.color="#0f0";
+    document.getElementById('timer').textContent="Scanning: "+(remaining/1000).toFixed(1)+"s left - Is it Alfon/Hans?";
+
+    // ===== STEP 2: TRY TO IDENTIFY =====
+    let d=ctx.getImageData(0,0,96,96).data;
+    let f=[];for(let i=0;i<d.length;i+=4){f.push((d[i]+d[i+1]+d[i+2])/3);}
+    let res=classifier.classify(f);
+    let alfon=0,hans=0,unknown=0,txt="";
+    for(let r of res.results){ txt+=r.label+":"+r.value.toFixed(2)+" "; if(r.label.toLowerCase()=="alfon") alfon=r.value; if(r.label.toLowerCase()=="hans") hans=r.value; if(r.label.toLowerCase()=="unknown") unknown=r.value; }
+    document.getElementById('result').textContent=txt;
+
+    let top="",score=0;
+    if(alfon>0.50 && alfon>=hans){ top="Alfon"; score=alfon; }
+    else if(hans>0.50 && hans>=alfon){ top="Hans"; score=hans; }
+
+    if(top!=""){
+      if(top==lastTop){ confirmCount++; } else { lastTop=top; confirmCount=1; }
+      if(confirmCount>=2){
+        alreadySent=true;
+        sendToESP32("/"+top.toLowerCase(), "IDENTIFIED in "+(elapsed/1000).toFixed(1)+"s: "+top+" "+score.toFixed(2));
+        setTimeout(()=>{ lastSent=""; }, 3000);
+        return;
+      }
+    } else { confirmCount=0; }
+
+    // ===== STEP 3: TIMEOUT 3 SEC -> UNKNOWN =====
+    if(elapsed>=3000){
+      alreadySent=true;
+      document.getElementById('timer').textContent="⏰ Timeout 3 sec! Can't identify -> UNKNOWN PERSON";
+      sendToESP32("/unknown", "TIMEOUT 3 sec - Person found but not Alfon/Hans (Alfon "+alfon.toFixed(2)+" Hans "+hans.toFixed(2)+" Unknown "+unknown.toFixed(2)+")");
+      setTimeout(()=>{ lastSent=""; }, 3000);
+    }
+  },1000);
+}
+</script></body></html>
