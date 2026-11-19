@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera2 Fixed</title>
+<style>body{font-family:sans-serif;text-align:center;background:#111;color:white}video{width:95%;max-width:400px}button{font-size:20px;padding:12px;margin:6px}#log{color:yellow;text-align:left;padding:10px}</style></head>
+<body>
+<h2>Camera2 Fixed</h2>
+<video id="video" autoplay playsinline muted></video><br>
+<button onclick="start()">▶ Start Camera + AI</button>
+<div id="result">Waiting...</div>
+<div id="log">Log...</div>
+<canvas id="canvas" width="96" height="96" style="display:none"></canvas><br>
+<button onclick="fetch('http://192.168.18.225/alfon',{mode:'no-cors'})">ALFON</button>
+<button onclick="fetch('http://192.168.18.225/hans',{mode:'no-cors'})">HANS</button>
+<button onclick="fetch('http://192.168.18.225/unknown',{mode:'no-cors'})">UNKNOWN</button>
+<script src="edge-impulse-standalone.js"></script>
+<script src="run-impulse.js"></script>
+<script>
+function log(m){document.getElementById('log').innerHTML+="<br>"+m;}
+async function start(){
+  log("1. Button tapped");
+  try{
+    log("2. Starting camera...");
+    let video=document.getElementById('video');
+    let stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
+    video.srcObject=stream;
+    log("3. ✅ Camera OK!");
+  }catch(e){log("❌ Camera ERROR: "+e.message);return;}
+  try{
+    log("4. Loading model...");
+    let classifier=new EdgeImpulseClassifier();
+    await classifier.init();
+    log("5. ✅ Model LOADED!");
+    setInterval(async()=>{
+      let c=document.getElementById('canvas');let ctx=c.getContext('2d');
+      ctx.drawImage(video,0,0,96,96);
+      let d=ctx.getImageData(0,0,96,96).data;
+      let f=[];for(let i=0;i<d.length;i+=4){f.push((d[i]+d[i+1]+d[i+2])/3/255);}
+      let res=classifier.classify(f);
+      let top="",score=0,txt="";
+      for(let r of res.results){txt+=r.label+":"+r.value.toFixed(2)+" ";if(r.value>score){score=r.value;top=r.label;}}
+      document.getElementById('result').textContent=txt+" => "+top;
+      if(score>0.85){if(top==="Alfon")fetch('http://192.168.18.225/alfon',{mode:'no-cors'});else if(top==="Hans")fetch('http://192.168.18.225/hans',{mode:'no-cors'});else if(top==="unknown")fetch('http://192.168.18.225/unknown',{mode:'no-cors'});}
+    },2000);
+  }catch(e){log("❌ Model ERROR: "+e.message);}
+}
+</script></body></html>
