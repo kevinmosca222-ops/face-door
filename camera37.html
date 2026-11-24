@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera37 - DIAGNOSTIC</title>
+<style>body{font-family:sans-serif;text-align:center;background:#111;color:white}video{width:95%;max-width:400px}canvas{border:3px solid yellow;width:150px;height:150px}button{font-size:20px;padding:12px;margin:6px}#grayBox{font-size:18px;color:#ff0;background:#222;padding:10px;word-break:break-all}#rgbBox{font-size:18px;color:#0f0;background:#222;padding:10px;word-break:break-all}</style></head>
+<body>
+<h2>Camera37 - DIAGNOSTIC - Gray vs RGB</h2>
+<div>NO sending! NO background! Just test MODEL!</div>
+<div id="person">Tap Start, point at REAL ALFON...</div>
+<video id="video" autoplay playsinline muted></video><br>
+<button onclick="start()">▶ Start Diagnostic</button>
+<div>👇 YELLOW BOX - FACE HERE!</div>
+<canvas id="canvas" width="96" height="96"></canvas>
+<div>GRAYSCALE (9,216 values) - OLD method:</div>
+<div id="grayBox">Waiting...</div>
+<div>RGB (27,648 values) - NEW method:</div>
+<div id="rgbBox">Waiting...</div>
+<div id="log" style="color:yellow;text-align:left;padding:10px"></div>
+<script src="edge-impulse-standalone.js"></script>
+<script src="run-impulse.js"></script>
+<script>
+let log=(m)=>{document.getElementById('log').innerHTML+="<br>"+m;}
+async function start(){
+  log("Opening BACK camera...");
+  try{
+    let stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment",width:{ideal:640},height:{ideal:480}},audio:false});
+    let video=document.getElementById('video'); video.srcObject=stream; await video.play(); log("✅ Camera ON!");
+  }catch(e){ log("❌ Camera blocked!"); return; }
+  let classifier=new EdgeImpulseClassifier(); await classifier.init(); log("✅ Model LOADED! Show REAL ALFON face, fill yellow box!");
+  setInterval(()=>{
+    let video=document.getElementById('video'); if(!video.videoWidth) return;
+    let c=document.getElementById('canvas'); let ctx=c.getContext('2d');
+    let vw=video.videoWidth, vh=video.videoHeight;
+    let s=Math.min(vw,vh)*0.55;
+    let sx=(vw-s)/2, sy=(vh-s)/2 - (vh*0.05); if(sy<0) sy=0;
+    ctx.drawImage(video, sx, sy, s, s, 0, 0, 96, 96);
+    let d=ctx.getImageData(0,0,96,96).data;
+    // TEST 1: GRAYSCALE
+    let gray=[]; for(let i=0;i<d.length;i+=4){ gray.push((d[i]+d[i+1]+d[i+2])/3); }
+    let resGray=classifier.classify(gray);
+    let txtGray=""; for(let r of resGray.results){ txtGray+=r.label+":"+r.value.toFixed(2)+" "; }
+    document.getElementById('grayBox').textContent="GRAY: "+txtGray;
+    // TEST 2: RGB
+    let rgb=[]; for(let i=0;i<d.length;i+=4){ rgb.push(d[i]); rgb.push(d[i+1]); rgb.push(d[i+2]); }
+    let resRgb=classifier.classify(rgb);
+    let txtRgb=""; for(let r of resRgb.results){ txtRgb+=r.label+":"+r.value.toFixed(2)+" "; }
+    document.getElementById('rgbBox').textContent="RGB: "+txtRgb;
+  },1000);
+}
+</script></body></html>
