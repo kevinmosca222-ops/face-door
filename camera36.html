@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera36 - ALFON + HANS - 30FPS</title>
+<style>body{font-family:sans-serif;text-align:center;background:#111;color:white}video{width:95%;max-width:400px}canvas{border:3px solid yellow;width:150px;height:150px}button{font-size:20px;padding:12px;margin:6px}#log{color:yellow;text-align:left;padding:10px;font-size:16px}#person{font-size:24px;padding:8px}#timer{font-size:22px;color:#ff0}#diff{font-size:18px;color:#0ff}#raw{font-size:16px;color:#0f0;background:#222;padding:10px;word-break:break-all}#serverStatus{font-size:20px;padding:10px;background:#333;border-radius:10px;margin:10px}#modelCheck{font-size:20px;padding:10px;background:green}#fps{font-size:22px;color:#0ff;background:#333;padding:8px}#classifyFps{font-size:18px;color:#ff0}</style></head>
+<body>
+<h2>Camera36 - ALFON + HANS - 30 FPS!</h2>
+<div id="serverStatus">🔴 Checking Server...</div>
+<div>ESP32: 10.91.32.34 | Diff: 55 | GRAYSCALE + HIGHEST WINS + 30 FPS!</div>
+<div id="modelCheck">✅ GRAYSCALE Model - ALFON / HANS</div>
+<div id="fps">Preview FPS: --</div>
+<div id="classifyFps">Classify FPS: --</div>
+<div id="person">⏳ Tap Start...</div>
+<div id="timer">Timer: --</div>
+<div id="diff">Difference: --</div>
+<video id="video" autoplay playsinline muted></video><br>
+<button onclick="start()">▶ Start</button>
+<button onclick="setBackground()">📸 Set Background</button>
+<button onclick="resetNow()">🔄 Reset</button>
+<div id="result">Waiting...</div>
+<div id="raw">RAW labels will show here...</div>
+<div>👇 YELLOW BOX - FACE MUST FILL THIS BOX!</div>
+<canvas id="canvas" width="96" height="96"></canvas>
+<div id="log">Log...</div>
+<br>
+<button onclick="sendManually('/alfon')">ALFON</button>
+<button onclick="sendManually('/hans')">HANS</button>
+<button onclick="sendManually('/unknown')">UNKNOWN</button>
+<script src="edge-impulse-standalone.js"></script>
+<script src="run-impulse.js"></script>
+<script>
+const ESP32="http://10.91.32.34";
+const DIFF_THRESHOLD=55;
+let background=null, personConfirmed=false, personStartTime=0, alreadySent=false, isCoolingDown=false;
+let previewFrames=0, lastPreviewTime=Date.now(), classifyFrames=0, lastClassifyTime=Date.now(), isClassifying=false;
+let lastAlfon=0, lastHans=0, lastUnknown=0, lastDiff=0;
+function log(m){document.getElementById('log').innerHTML+="<br>"+m;}
+function resetNow(){ log("🔄 RESET"); personConfirmed=false; personStartTime=0; alreadySent=false; isCoolingDown=false; }
+async function checkServer(){
+  try{ await fetch(ESP32+"/ping?t="+Date.now(), {mode:'no-cors'}); document.getElementById('serverStatus').innerHTML="🟢 SERVER CONNECTED - ESP32: 10.91.32.34"; document.getElementById('serverStatus').style.background="green"; }
+  catch(e){ document.getElementById('serverStatus').innerHTML="🔴 SERVER NOT CONNECTED!"; document.getElementById('serverStatus').style.background="red"; }
+}
+setInterval(checkServer, 3000); checkServer();
+function drawCenterCrop() {
+  let video=document.getElementById('video');
+  let c=document.getElementById('canvas');let ctx=c.getContext('2d');
+  let vw=video.videoWidth, vh=video.videoHeight;
+  let s=Math.min(vw, vh) * 0.55;
+  let sx=(vw-s)/2, sy=(vh-s)/2 - (vh*0.05); if(sy<0) sy=0;
+  ctx.drawImage(video, sx, sy, s, s, 0, 0, 96, 96);
+}
+function setBackground(){ drawCenterCrop(); let c=document.getElementById('canvas');let ctx=c.getContext('2d'); background=ctx.getImageData(0,0,96,96).data.slice(); log("📸 Background saved!"); personConfirmed=false; }
+function sendToESP32(path, reason){ log("➡️ SENDING: "+path+" | "+reason); fetch(ESP32+path+"?t="+Date.now(),{mode:'no-cors'}).catch(e=>{}); let i=new Image(); i.src=ESP32+path+"?t="+Date.now(); }
+function sendManually(p){ log("Manual: "+p); sendToESP32(p,"Manual button"); }
+function finishScan(){
+  alreadySent=true; isCoolingDown=true;
+  setTimeout(()=>{ personConfirmed=false; alreadySent=false; isCoolingDown=false; log("🔄 Ready for NEXT person!"); }, 3000);
+}
+async function start(){
+  try {
+    let stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: {ideal:640}, height: {ideal:480} }, audio: false });
+    let video = document.getElementById('video'); video.srcObject = stream; await video.play(); log("✅ BACK Camera ON!");
+  } catch(e){ log("❌ Camera blocked!"); return; }
+  let classifier=new EdgeImpulseClassifier(); await classifier.init();
+  log("Model LOADED! Point at EMPTY wall 2 sec...");
+  setTimeout(()=>{ drawCenterCrop(); let c=document.getElementById('canvas');let ctx=c.getContext('2d'); background=ctx.getImageData(0,0,96,96).data.slice(); log("📸 Background AUTO-saved!"); },2000);
+  // ✅ 30 FPS LOOP - requestAnimationFrame = 60 FPS target, we do 30 FPS
+  let lastRun=0;
+  function loop(now){
+    requestAnimationFrame(loop);
+    // Throttle to ~30 FPS (33ms)
+    if(now-lastRun < 33) return;
+    lastRun=now;
+    let video=document.getElementById('video'); if(!video.videoWidth) return;
+    // 1. PREVIEW - Always 30 FPS, smooth!
+    drawCenterCrop();
+    previewFrames++;
+    let t1=Date.now();
+    if(t1-lastPreviewTime>=1000){
+      let fps=Math.round(previewFrames*1000/(t1-lastPreviewTime));
+      document.getElementById('fps').textContent="Preview FPS: "+fps+" (Target: 30)";
+      previewFrames=0; lastPreviewTime=t1;
+    }
+    // 2. CLASSIFY - Try every frame, skip if busy!
+    if(isClassifying) return;
+    isClassifying=true;
+    try{
+      let c=document.getElementById('canvas');let ctx=c.getContext('2d');
+      let d=ctx.getImageData(0,0,96,96).data;
+      let f=[]; for(let i=0;i<d.length;i+=4){ f.push((d[i]+d[i+1]+d[i+2])/3); }
+      let res=classifier.classify(f);
+      classifyFrames++;
+      let t2=Date.now();
+      if(t2-lastClassifyTime>=1000){
+        let cfps=Math.round(classifyFrames*1000/(t2-lastClassifyTime));
+        document.getElementById('classifyFps').textContent="Classify FPS: "+cfps+" (Phone max!)";
+        classifyFrames=0; lastClassifyTime=t2;
+      }
+      let alfon=0, hans=0, unknownScore=0, txt="";
+      for(let r of res.results){
+        let L=r.label.toLowerCase().trim();
+        txt+=r.label+":"+r.value.toFixed(2)+" ";
+        if(L==="alfon") alfon=r.value;
+        else if(L==="hans") hans=r.value;
+        else if(L==="unknown" || L==="stranger" || L==="background") unknownScore=r.value;
+      }
+      lastAlfon=alfon; lastHans=hans; lastUnknown=unknownScore;
+      document.getElementById('raw').textContent = "RAW: " + JSON.stringify(res.results.map(r=>r.label+":"+r.value.toFixed(2)));
+      document.getElementById('result').textContent=txt;
+      if(isCoolingDown){ document.getElementById('person').textContent="✅ Sent! Cooling down..."; isClassifying=false; return; }
+      if(!background){ isClassifying=false; return; }
+      let diffSum=0, count=0;
+      for(let i=0;i<d.length;i+=16){ diffSum+=Math.abs(d[i]-background[i]); count++; }
+      let diffAvg=diffSum/count; lastDiff=diffAvg;
+      document.getElementById('diff').textContent="Difference: "+diffAvg.toFixed(1)+" (Need >55)";
+      if(diffAvg <= DIFF_THRESHOLD){
+        document.getElementById('person').textContent="⏳ No Person - Diff "+diffAvg.toFixed(1);
+        personConfirmed=false; personStartTime=0; alreadySent=false;
+        isClassifying=false; return;
+      }
+      if(!personConfirmed){ personConfirmed=true; personStartTime=Date.now(); alreadySent=false; log("✅ PERSON DETECTED!"); }
+      if(alreadySent){ isClassifying=false; return; }
+      let elapsed=Date.now()-personStartTime;
+      let remaining=Math.max(0,1500-elapsed);
+      let winner="UNKNOWN"; if(alfon>hans && alfon>unknownScore) winner="ALFON"; else if(hans>alfon && hans>unknownScore) winner="HANS";
+      document.getElementById('person').textContent="✅ PERSON! Winning: "+winner+" | ALFON:"+alfon.toFixed(2)+" HANS:"+hans.toFixed(2)+" UNKNOWN:"+unknownScore.toFixed(2);
+      document.getElementById('timer').textContent="Wait: "+(remaining/1000).toFixed(1)+"s then send highest";
+      if(elapsed>=1500){
+        let maxScore=Math.max(alfon,hans,unknownScore);
+        if(maxScore===alfon) sendToESP32("/alfon","HIGHEST ALFON "+alfon.toFixed(2));
+        else if(maxScore===hans) sendToESP32("/hans","HIGHEST HANS "+hans.toFixed(2));
+        else sendToESP32("/unknown","HIGHEST UNKNOWN "+unknownScore.toFixed(2));
+        finishScan();
+      }
+    }catch(e){ log("Error: "+e); }
+    isClassifying=false;
+  }
+  requestAnimationFrame(loop);
+}
+</script></body></html>
